@@ -230,34 +230,34 @@ class LocalAICoderAgent:
         self.filesystem = LocalFileSystem(workspace_root)
         self.bash_executor = LocalBashExecutor(workspace_root)
         self.conversation_history: List[Message] = []
+        self.file_memory = {}  # Track known files
         
-        self.system_prompt = """You are an AI coding assistant. You help users by using tools to complete tasks.
+        self.system_prompt = """You are an AI coding assistant with file system access.
 
-CRITICAL RULES:
-1. Use ONE tool at a time
-2. Respond with ONLY a JSON object (not an array)
-3. Wait for tool result before using another tool
+CRITICAL FILE OPERATION RULES:
+1. ALWAYS read_file FIRST before modifying any file
+2. Use write_file ONLY for NEW files or when user says "create" or "overwrite"
+3. Use append_file to ADD code to EXISTING files
+4. When user says "add", "update", "fix", or "modify" → read file first, then append
 
-CORRECT format:
-{"tool": "write_file", "parameters": {"path": "app.py", "content": "print('hello')\\n"}}
+STEP-BY-STEP WORKFLOW:
+User: "Add a function to app.py"
+→ Step 1: {"tool": "read_file", "parameters": {"path": "app.py"}}
+→ Step 2: {"tool": "append_file", "parameters": {"path": "app.py", "content": "\\ndef new_function():\\n    pass\\n"}}
 
-WRONG formats (DO NOT USE):
-- Arrays: {"tool": [...]} ❌
-- Multiple tools: [{"tool": ...}, {"tool": ...}] ❌
-- Extra text before/after JSON ❌
+User: "Create new file test.py"
+→ {"tool": "write_file", "parameters": {"path": "test.py", "content": "print('hello')\\n"}}
 
 Available tools (use ONE at a time):
-- write_file: {"tool": "write_file", "parameters": {"path": "file.py", "content": "code\\n"}} - Creates NEW file or OVERWRITES existing
-- append_file: {"tool": "append_file", "parameters": {"path": "file.py", "content": "more code\\n"}} - ADDS to existing file
 - read_file: {"tool": "read_file", "parameters": {"path": "file.py"}}
+- write_file: {"tool": "write_file", "parameters": {"path": "file.py", "content": "code\\n"}} - For NEW files
+- append_file: {"tool": "append_file", "parameters": {"path": "file.py", "content": "more\\n"}} - For EXISTING files
 - list_directory: {"tool": "list_directory", "parameters": {"path": "."}}
 - execute_bash: {"tool": "execute_bash", "parameters": {"command": "python file.py"}}
 - search_code: {"tool": "search_code", "parameters": {"pattern": "def", "file_pattern": "*.py"}}
 
-IMPORTANT: Use write_file for NEW files, append_file to ADD to existing files!
-
-Use \\n for newlines, \\t for tabs in file content.
-After tool execution, provide a brief response to the user."""
+IMPORTANT: Use \\n for newlines, \\t for tabs.
+Respond with ONLY valid JSON object (not array)."""
         
         self.conversation_history.append(Message("system", self.system_prompt))
     
@@ -364,23 +364,45 @@ After tool execution, provide a brief response to the user."""
         """Execute a tool and return the result"""
         try:
             if tool_type == ToolType.READ_FILE:
-                return self.filesystem.read_file(parameters["path"])
+                result = self.filesystem.read_file(parameters["path"])
+                # Remember this file exists
+                self.file_memory[parameters["path"]] = True
+                return result
             
             elif tool_type == ToolType.WRITE_FILE:
-                return self.filesystem.write_file(
-                    parameters["path"],
-                    parameters["content"]
-                )
+                path = parameters["path"]
+                # Warn if overwriting existing file
+                warning = ""
+                if path in self.file_memory:
+                    warning = f"⚠️  WARNING: Overwriting existing file {path}!\n"
+                result = self.filesystem.write_file(path, parameters["content"])
+                self.file_memory[path] = True
+                return warning + result
             
             elif tool_type == ToolType.APPEND_FILE:
-                return self.filesystem.append_file(
-                    parameters["path"],
-                    parameters["content"]
-                )
+                path = parameters["path"]
+                # Check if we know about this file
+                if path not in self.file_memory:
+                    # Try to read it first to verify it exists
+                    try:
+                        self.filesystem.read_file(path)
+                        self.file_memory[path] = True
+                    except:
+                        return f"❌ Error: File {path} doesn't exist. Use write_file to create it first."
+                
+                result = self.filesystem.append_file(path, parameters["content"])
+                return result
             
             elif tool_type == ToolType.LIST_DIR:
                 path = parameters.get("path", ".")
-                return self.filesystem.list_directory(path)
+                result = self.filesystem.list_directory(path)
+                # Remember files we see
+                for line in result.split('\n'):
+                    if '📄' in line:
+                        filename = line.split('📄')[1].split('(')[0].strip()
+                        full_path = os.path.join(path, filename) if path != "." else filename
+                        self.file_memory[full_path] = True
+                return result
             
             elif tool_type == ToolType.EXECUTE_BASH:
                 return self.bash_executor.execute(parameters["command"])
@@ -389,7 +411,7 @@ After tool execution, provide a brief response to the user."""
                 pattern = parameters["pattern"]
                 file_pattern = parameters.get("file_pattern", "*.py")
                 return self.filesystem.search_code(pattern, file_pattern)
-            
+        
         except Exception as e:
             return f"Error executing tool: {str(e)}"
     
@@ -442,15 +464,26 @@ After tool execution, provide a brief response to the user."""
         return full_response
     
     def _build_prompt(self) -> str:
-        """Build prompt from conversation history"""
+        """Build prompt from conversation history (with limit to prevent overflow)"""
+        MAX_MESSAGES = 12  # Keep system + last 11 messages
+        
+        if len(self.conversation_history) > MAX_MESSAGES:
+            # Keep system prompt + recent messages
+            messages = [self.conversation_history[0]]  # system prompt
+            messages.append(Message("system", f"[{len(self.conversation_history) - MAX_MESSAGES} earlier messages truncated]"))
+            messages.extend(self.conversation_history[-MAX_MESSAGES+2:])
+        else:
+            messages = self.conversation_history
+        
         prompt_parts = []
-        for msg in self.conversation_history:
+        for msg in messages:
             prompt_parts.append(f"{msg.role.capitalize()}: {msg.content}\n")
         return "\n".join(prompt_parts)
     
     def reset(self):
         """Reset conversation history"""
         self.conversation_history = [Message("system", self.system_prompt)]
+        self.file_memory = {}  # Also clear file memory
 
 
 def main():

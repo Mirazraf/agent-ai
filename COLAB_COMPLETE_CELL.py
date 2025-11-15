@@ -129,6 +129,7 @@ else:
 #####
 
 # Create the server file
+# Create the server file
 server_code = '''
 from flask import Flask, request, jsonify, Response
 import ollama
@@ -156,7 +157,13 @@ def generate():
                 response_stream = ollama.generate(
                     model=MODEL_NAME,
                     prompt=prompt,
-                    stream=True
+                    stream=True,
+                    options={
+                        'temperature': 0.1,      # Lower = less random
+                        'top_p': 0.9,            # Focus on likely tokens
+                        'repeat_penalty': 1.2,   # Prevent repetition
+                        'num_predict': 512,      # Limit response length
+                    }
                 )
                 for chunk in response_stream:
                     yield json.dumps({"response": chunk['response']}) + "\\n"
@@ -166,7 +173,13 @@ def generate():
             response = ollama.generate(
                 model=MODEL_NAME,
                 prompt=prompt,
-                stream=False
+                stream=False,
+                options={
+                    'temperature': 0.1,
+                    'top_p': 0.9,
+                    'repeat_penalty': 1.2,
+                    'num_predict': 512,
+                }
             )
             return jsonify({"response": response['response']})
     
