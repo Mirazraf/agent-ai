@@ -158,12 +158,12 @@ def generate():
                     model=MODEL_NAME,
                     prompt=prompt,
                     stream=True,
-                    options={
-                        'temperature': 0.1,      # Lower = less random
-                        'top_p': 0.9,            # Focus on likely tokens
-                        'repeat_penalty': 1.2,   # Prevent repetition
-                        'num_predict': 512,      # Limit response length
-                    }
+                options={
+                    'temperature': 0.05,     # Changed from 0.1 - even more deterministic
+                    'top_p': 0.9,
+                    'repeat_penalty': 1.3,   # Changed from 1.2 - stronger penalty
+                    'num_predict': 800,      # Changed from 512 - allow longer responses
+                }
                 )
                 for chunk in response_stream:
                     yield json.dumps({"response": chunk['response']}) + "\\n"
@@ -175,10 +175,10 @@ def generate():
                 prompt=prompt,
                 stream=False,
                 options={
-                    'temperature': 0.1,
+                    'temperature': 0.05,     # Changed from 0.1 - even more deterministic
                     'top_p': 0.9,
-                    'repeat_penalty': 1.2,
-                    'num_predict': 512,
+                    'repeat_penalty': 1.3,   # Changed from 1.2 - stronger penalty
+                    'num_predict': 800,      # Changed from 512 - allow longer responses
                 }
             )
             return jsonify({"response": response['response']})

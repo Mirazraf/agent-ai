@@ -231,6 +231,8 @@ class LocalAICoderAgent:
         self.bash_executor = LocalBashExecutor(workspace_root)
         self.conversation_history: List[Message] = []
         self.file_memory = {}  # Track known files
+        self.tool_call_count = 0  # ADD THIS LINE
+        self.max_tool_calls = 5   # ADD THIS LINE - Maximum 5 tools per user request
         
         self.system_prompt = """You are an AI coding assistant with file system access.
 
@@ -239,25 +241,36 @@ CRITICAL FILE OPERATION RULES:
 2. Use write_file ONLY for NEW files or when user says "create" or "overwrite"
 3. Use append_file to ADD code to EXISTING files
 4. When user says "add", "update", "fix", or "modify" → read file first, then append
+5. When creating NEW files, write COMPLETE, WORKING code - not just comments or skeletons
 
-STEP-BY-STEP WORKFLOW:
+WORKFLOW FOR CREATING NEW FILES:
+User: "Create a tic-tac-toe game"
+→ {"tool": "write_file", "parameters": {"path": "tictactoe.py", "content": "FULL WORKING CODE HERE WITH ALL LOGIC"}}
+
+WORKFLOW FOR MODIFYING EXISTING FILES:
 User: "Add a function to app.py"
 → Step 1: {"tool": "read_file", "parameters": {"path": "app.py"}}
-→ Step 2: {"tool": "append_file", "parameters": {"path": "app.py", "content": "\\ndef new_function():\\n    pass\\n"}}
+→ Wait for result, then Step 2: {"tool": "append_file", "parameters": {"path": "app.py", "content": "\\ndef new_function():\\n    return 42\\n"}}
 
-User: "Create new file test.py"
-→ {"tool": "write_file", "parameters": {"path": "test.py", "content": "print('hello')\\n"}}
+WHEN TO STOP USING TOOLS:
+- After creating/modifying a file successfully, STOP and explain to the user what you did
+- Do NOT keep reading the same file over and over
+- Do NOT use tools if the user just wants information or explanation
 
 Available tools (use ONE at a time):
 - read_file: {"tool": "read_file", "parameters": {"path": "file.py"}}
-- write_file: {"tool": "write_file", "parameters": {"path": "file.py", "content": "code\\n"}} - For NEW files
-- append_file: {"tool": "append_file", "parameters": {"path": "file.py", "content": "more\\n"}} - For EXISTING files
+- write_file: {"tool": "write_file", "parameters": {"path": "file.py", "content": "COMPLETE_WORKING_CODE\\n"}} - For NEW files
+- append_file: {"tool": "append_file", "parameters": {"path": "file.py", "content": "more_code\\n"}} - For EXISTING files
 - list_directory: {"tool": "list_directory", "parameters": {"path": "."}}
 - execute_bash: {"tool": "execute_bash", "parameters": {"command": "python file.py"}}
 - search_code: {"tool": "search_code", "parameters": {"pattern": "def", "file_pattern": "*.py"}}
 
-IMPORTANT: Use \\n for newlines, \\t for tabs.
-Respond with ONLY valid JSON object (not array)."""
+IMPORTANT: 
+- Use \\n for newlines, \\t for tabs
+- Write COMPLETE, FUNCTIONAL code, not just comments
+- After tool execution succeeds, provide a brief explanation and STOP
+- Respond with ONLY valid JSON object (not array)
+- Do NOT hallucinate user messages or instructions"""
         
         self.conversation_history.append(Message("system", self.system_prompt))
     
@@ -417,6 +430,9 @@ Respond with ONLY valid JSON object (not array)."""
     
     def chat(self, user_message: str, stream: bool = True, debug: bool = False) -> str:
         """Send a message and get response"""
+        # Reset counter for new user messages (not for internal "Continue..." messages)
+        if not user_message.startswith("Based on the tool result"):
+            self.tool_call_count = 0  # ADD THIS LINE
         self.conversation_history.append(Message("user", user_message))
         
         prompt = self._build_prompt()
@@ -447,6 +463,12 @@ Respond with ONLY valid JSON object (not array)."""
         tool_call = self.parse_tool_call(full_response.strip())
         
         if tool_call:
+            self.tool_call_count += 1  # ADD THIS LINE
+            
+            # ADD THIS CHECK:
+            if self.tool_call_count > self.max_tool_calls:
+                print(f"\n[WARNING: Maximum tool calls ({self.max_tool_calls}) reached. Stopping.]")
+                return "I've made several tool calls but seem to be stuck. Please try rephrasing your request or reset the conversation with 'reset'."
             tool_type, parameters = tool_call
             print(f"\n[Executing: {tool_type.value}]")
             tool_result = self.execute_tool(tool_type, parameters)
@@ -454,8 +476,11 @@ Respond with ONLY valid JSON object (not array)."""
             
             self.conversation_history.append(Message("assistant", full_response))
             self.conversation_history.append(Message("user", f"Tool result:\n{tool_result}"))
-            
-            return self.chat("Continue based on the tool result.", stream=stream, debug=debug)
+
+            # Add a stopping condition to prevent infinite loops
+            continue_prompt = "Based on the tool result above, provide a final response to the user. If the task is complete, explain what was done. If more actions are needed, use ONE more tool."
+
+            return self.chat(continue_prompt, stream=stream, debug=debug)
         else:
             if debug:
                 print("[DEBUG] No tool call detected in response")
