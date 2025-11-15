@@ -1,0 +1,8 @@
+# For Colab (server side)
+ollama>=0.1.0
+flask>=2.0.0
+flask-cors>=4.0.0
+pyngrok>=6.0.0
+
+# For Local PC (client side)
+requests>=2.28.0
